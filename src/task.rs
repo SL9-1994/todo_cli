@@ -1,5 +1,4 @@
 use std::error::Error;
-use std::io::Write;
 use std::path::Path;
 use std::{fs, io};
 
@@ -9,27 +8,27 @@ use rand::Rng;
 use serde::{Deserialize, Serialize};
 
 use crate::{AddArgs, EditArgs, RemoveArgs};
-use csv::{Reader, Writer, WriterBuilder};
+use csv::{Reader, Writer};
 use std::fs::{File, OpenOptions};
-
-// Constants
-
-/// The file path of the todo list CSV file.
-/// Consider reading from environment variables.
-const TODO_FILE: &str = "/tmp/todo/todo.csv";
-
-// end Constants
 
 /// Represents a collection of tasks.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Tasks {
     tasks: Vec<Task>,
+    file_path: String,
 }
 
 impl Tasks {
     /// Creates a new instance of `Tasks`.
-    pub fn new() -> Tasks {
-        Tasks { tasks: Vec::new() }
+    ///
+    /// # Arguments
+    ///
+    /// * `file_path` - The path to the CSV file that stores the tasks.
+    pub fn new(file_path: String) -> Tasks {
+        Tasks {
+            tasks: Vec::new(),
+            file_path,
+        }
     }
 
     /// Adds a new task to the collection.
@@ -40,10 +39,12 @@ impl Tasks {
     ///
     /// # Returns
     ///
-    /// Returns a `Result` indicating whether the task was successfully added or not.
+    /// * `Result<String, Box<dyn Error>>` - A result indicating whether the task was successfully added or not.
     pub fn add_task(&mut self, add_args: AddArgs) -> Result<String, Box<dyn Error>> {
+        self.read_tasks_from_csv()?;
+
         let new_id = self.generate_task_id();
-        let is_done = false; // Initial value
+        let is_done = false;
 
         self.tasks.push(Task::new(
             new_id,
@@ -52,7 +53,7 @@ impl Tasks {
             is_done,
         ));
 
-        self.write_task_to_csv()?;
+        self.write_tasks_to_csv()?;
 
         Ok("The task was successfully added.".to_string())
     }
@@ -65,56 +66,49 @@ impl Tasks {
     ///
     /// # Returns
     ///
-    /// Returns a `Result` indicating whether the task was successfully edited or not.
+    /// * `Result<String, Box<dyn Error>>` - A result indicating whether the task was successfully edited or not.
     pub fn edit_task(&mut self, edit_args: EditArgs) -> Result<String, Box<dyn Error>> {
+        self.read_tasks_from_csv()?;
+
         let id = edit_args.id;
+        let mut found = false;
 
-        let file = File::open(TODO_FILE)?;
-
-        let mut rdr = csv::Reader::from_reader(file);
-
-        // Since it is not possible to read and write files at the same time, prepare a buffer and
-        //Edit the task and write the edited task to the buffer
-        let mut buffer = Vec::new();
-        {
-            let mut writer = csv::Writer::from_writer(&mut buffer);
-
-            for result in rdr.deserialize() {
-                let mut record: Task = result?;
-                if record.id == id {
-                    let title = edit_args.title.clone().unwrap_or(record.title);
-                    let description = edit_args.description.clone().unwrap_or(record.description);
-                    let is_done = edit_args.is_done.unwrap_or(record.is_done);
-
-                    record.title = title;
-                    record.description = description;
-                    record.is_done = is_done;
+        for task in &mut self.tasks {
+            if task.id == id {
+                if let Some(title) = edit_args.title {
+                    task.title = title;
                 }
-                writer.serialize(&record)?;
+                if let Some(description) = edit_args.description {
+                    task.description = description;
+                }
+                if let Some(is_done) = edit_args.is_done {
+                    task.is_done = is_done;
+                }
+                found = true;
+                break;
             }
         }
 
-        let mut file = OpenOptions::new()
-            .write(true)
-            .truncate(true)
-            .open(TODO_FILE)?;
-        file.write_all(&buffer)?;
-
-        Ok("The task was successfully edited.".to_string())
+        if found {
+            self.write_tasks_to_csv()?;
+            Ok("The task was successfully edited.".to_string())
+        } else {
+            Err("Task not found.".into())
+        }
     }
 
-    /// Lists all tasks in the collection.
+    /// Lists all the tasks in the collection.
     ///
     /// # Returns
     ///
-    /// Returns a `Result` indicating whether the tasks were successfully listed or not.
+    /// * `Result<(), Box<dyn Error>>` - A result indicating whether the tasks were successfully listed or not.
     pub fn list_task(&mut self) -> Result<(), Box<dyn Error>> {
-        self.read_task_to_csv()?;
+        self.read_tasks_from_csv()?;
 
         let mut table = Table::new();
 
         // Add a header
-        table.add_row(row!["id", "title", "desc", "is_done"]);
+        table.add_row(row!["Id", "Title", "Desc", "Is Done"]);
 
         // Add a row and cells
         for task in &self.tasks {
@@ -122,7 +116,7 @@ impl Tasks {
                 Cell::new(&task.id).style_spec("ubFG"),
                 Cell::new(&task.title).style_spec("bFG"),
                 Cell::new(&task.description).style_spec("bFG"),
-                Cell::new(if task.is_done { "〇" } else { "×" }).style_spec("bFG"),
+                Cell::new(if task.is_done { "Yes" } else { "No" }).style_spec("bFG"),
             ]));
         }
 
@@ -139,47 +133,44 @@ impl Tasks {
     ///
     /// # Returns
     ///
-    /// Returns a `Result` indicating whether the task was successfully removed or not.
+    /// * `Result<String, Box<dyn Error>>` - A result indicating whether the task was successfully removed or not.
     pub fn remove_task(&mut self, remove_args: RemoveArgs) -> Result<String, Box<dyn Error>> {
-        let file = File::open(TODO_FILE)?;
-        let mut rdr = csv::Reader::from_reader(file);
-        let mut buffer = Vec::new();
+        self.read_tasks_from_csv()?;
+        let initial_len = self.tasks.len();
+        self.tasks.retain(|task| task.id != remove_args.id);
 
-        {
-            let mut writer = csv::Writer::from_writer(&mut buffer);
-            for result in rdr.deserialize() {
-                let record: Task = result?;
-                if record.id != remove_args.id {
-                    writer.serialize(&record)?;
-                }
-            }
+        let new_len = self.tasks.len();
+
+        if initial_len == new_len {
+            return Err("Task not found.".into());
         }
 
-        let mut file = OpenOptions::new()
-            .write(true)
-            .truncate(true)
-            .open(TODO_FILE)?;
-        file.write_all(&buffer)?;
-
+        self.write_tasks_to_csv()?;
         Ok("The task was successfully removed.".to_string())
     }
 
-    fn write_task_to_csv(&self) -> io::Result<()> {
-        let mut writer = if Path::new(TODO_FILE).exists() {
-            let file = OpenOptions::new().append(true).open(TODO_FILE)?;
-            // Ignore the header
-            WriterBuilder::new().has_headers(false).from_writer(file)
+    /// Writes all tasks in the collection to a CSV file.
+    ///
+    /// This method will overwrite the existing file if it exists, or create a new file if it does not.
+    /// Each task is serialized into a row in the CSV file.
+    ///
+    /// # Returns
+    ///
+    /// * `io::Result<()>` - A result indicating whether the tasks were successfully written to the CSV file.
+    fn write_tasks_to_csv(&self) -> io::Result<()> {
+        let mut writer = if Path::new(&self.file_path).exists() {
+            let file = OpenOptions::new()
+                .write(true)
+                .truncate(true)
+                .open(&self.file_path)?;
+            Writer::from_writer(file)
         } else {
-            // Create the directory if it does not exist
-            // Ensure that the parent directory of TODO_FILE exists
-            if let Some(parent) = Path::new(TODO_FILE).parent() {
+            if let Some(parent) = Path::new(&self.file_path).parent() {
                 if !parent.exists() {
                     fs::create_dir_all(parent)?;
                 }
             }
-
-            // Write the header
-            let file = File::create(TODO_FILE)?;
+            let file = File::create(&self.file_path)?;
             Writer::from_writer(file)
         };
 
@@ -188,21 +179,40 @@ impl Tasks {
         }
 
         writer.flush()?;
-
         Ok(())
     }
 
-    fn read_task_to_csv(&mut self) -> io::Result<()> {
-        let mut reader = Reader::from_path(TODO_FILE)?;
+    /// Reads tasks from a CSV file.
+    ///
+    /// This method reads tasks from a CSV file and adds them to the internal task list.
+    /// The CSV file should exist at the path specified when this `Tasks` instance was created.
+    ///
+    /// # Returns
+    ///
+    /// * `Ok(())` - If the tasks were successfully read.
+    /// * `Err(io::Error)` - If an error occurred while reading the tasks.
+    fn read_tasks_from_csv(&mut self) -> io::Result<()> {
+        self.tasks.clear();
+        if Path::new(&self.file_path).exists() {
+            let mut reader = Reader::from_path(&self.file_path)?;
 
-        for result in reader.deserialize() {
-            let task = result?;
-            self.tasks.push(task);
+            for result in reader.deserialize() {
+                let task = result?;
+                self.tasks.push(task);
+            }
         }
 
         Ok(())
     }
 
+    /// Generates a new task ID.
+    ///
+    /// This method is used to provide a unique ID for a new task.
+    /// The generated ID consists of a random combination of alphabets and numbers.
+    ///
+    /// # Returns
+    ///
+    /// * `String` - The generated task ID.
     fn generate_task_id(&self) -> String {
         rand::thread_rng()
             .sample_iter(&Alphanumeric)

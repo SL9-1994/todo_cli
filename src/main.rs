@@ -1,5 +1,6 @@
 mod task;
 use clap::{Args, Parser, Subcommand};
+use std::env;
 use task::Tasks;
 
 /// The main CLI struct.
@@ -51,7 +52,7 @@ struct EditArgs {
 #[derive(Args, Debug)]
 #[command(about = "Remove todo task")]
 struct RemoveArgs {
-    #[arg(short, long)]
+    #[arg()]
     id: String,
 }
 
@@ -63,14 +64,16 @@ struct ListArgs;
 fn main() {
     let args = Cli::parse();
 
-    let mut tasks = Tasks::new();
+    let todo_file = env::var("TODO_FILE").unwrap_or_else(|_| "/tmp/todo/todo.csv".to_string());
+
+    let mut tasks = Tasks::new(todo_file);
 
     match args.command {
         Commands::Add(add_args) => {
             let result = tasks.add_task(add_args);
             match result {
                 Ok(res) => println!("{}", res),
-                Err(e) => eprintln!("err: {}", e),
+                Err(e) => eprintln!("Error adding task:  {}", e),
             }
         }
 
@@ -78,7 +81,7 @@ fn main() {
             let result = tasks.remove_task(remove_args);
             match result {
                 Ok(res) => println!("{}", res),
-                Err(e) => eprintln!("err: {}", e),
+                Err(e) => eprintln!("Error removing task: {}", e),
             }
         }
 
@@ -86,7 +89,7 @@ fn main() {
             let result = tasks.edit_task(edit_args);
             match result {
                 Ok(res) => println!("{}", res),
-                Err(e) => eprintln!("err: {}", e),
+                Err(e) => eprintln!("Error editing task: {}", e),
             }
         }
 
@@ -94,7 +97,7 @@ fn main() {
             let result = tasks.list_task();
             match result {
                 Ok(_) => {}
-                Err(e) => eprintln!("err: {}", e),
+                Err(e) => eprintln!("Error listing tasks: {}", e),
             }
         }
     }
